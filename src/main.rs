@@ -1,5 +1,8 @@
+mod config;
+mod setup;
+
 use anyhow::{bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,15 +19,21 @@ enum OutputFormat {
 #[command(name = "gifclip")]
 #[command(about = "Download a YouTube clip and export as GIF/video with burned-in subtitles")]
 #[command(version)]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// YouTube URL
-    url: String,
+    #[arg(required_unless_present = "command")]
+    url: Option<String>,
 
     /// Start timestamp (e.g., "1:30" or "00:01:30" or "90")
-    start: String,
+    #[arg(required_unless_present = "command")]
+    start: Option<String>,
 
     /// End timestamp (e.g., "1:35" or "00:01:35" or "95")
-    end: String,
+    #[arg(required_unless_present = "command")]
+    end: Option<String>,
 
     /// Output filename (auto-generated from video title if not specified)
     #[arg(short, long)]
@@ -55,13 +64,31 @@ struct Args {
     quality: u32,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+    /// Configure gifclip (tool sources, etc.)
+    Setup,
+}
+
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    check_dependencies()?;
+    // Handle subcommands
+    if let Some(Commands::Setup) = cli.command {
+        setup::run_setup()?;
+        return Ok(());
+    }
 
-    let start_secs = parse_timestamp(&args.start)?;
-    let end_secs = parse_timestamp(&args.end)?;
+    // Ensure we have required args for clip mode
+    let url = cli.url.as_ref().context("URL is required")?;
+    let start = cli.start.as_ref().context("Start timestamp is required")?;
+    let end = cli.end.as_ref().context("End timestamp is required")?;
+
+    // Ensure tools are configured
+    let config = setup::ensure_setup()?;
+
+    let start_secs = parse_timestamp(start)?;
+    let end_secs = parse_timestamp(end)?;
 
     if end_secs <= start_secs {
         bail!("End time must be after start time");
@@ -70,58 +97,61 @@ fn main() -> Result<()> {
     let duration = end_secs - start_secs;
     println!(
         "Clipping {:.1}s from {} to {}",
-        duration, args.start, args.end
+        duration, start, end
     );
 
     let temp_dir = TempDir::new().context("Failed to create temp directory")?;
     let temp_path = temp_dir.path();
 
+    let yt_dlp = config.yt_dlp_path()?;
+    let ffmpeg = config.ffmpeg_path()?;
+
     // Get video title for auto-naming
-    let video_title = get_video_title(&args.url)?;
+    let video_title = get_video_title(&yt_dlp, url)?;
     println!("Video: {}", video_title);
 
     // Download video
     println!("Downloading video...");
     let video_path = temp_path.join("video.mp4");
-    let mut dl_cmd = Command::new("yt-dlp");
+    let mut dl_cmd = Command::new(&yt_dlp);
     dl_cmd
         .arg("-f")
-        .arg("b[ext=mp4]/b") // best mp4, fallback to best available
+        .arg("b[ext=mp4]/b")
         .arg("-o")
         .arg(&video_path)
         .arg("--no-playlist");
 
-    if !args.no_subs {
+    if !cli.no_subs {
         dl_cmd
-            .arg("--write-sub") // manual subs (preferred)
-            .arg("--write-auto-sub") // auto-generated fallback
+            .arg("--write-sub")
+            .arg("--write-auto-sub")
             .arg("--sub-lang")
-            .arg(&args.lang)
+            .arg(&cli.lang)
             .arg("--convert-subs")
             .arg("srt");
     }
 
-    dl_cmd.arg(&args.url);
+    dl_cmd.arg(url);
 
     let dl_status = dl_cmd.status().context("Failed to run yt-dlp")?;
     if !dl_status.success() {
         bail!("yt-dlp failed to download video");
     }
 
-    // Find subtitle file - yt-dlp may name it differently depending on source
-    let sub_path = find_subtitle_file(temp_path, &args.lang);
-    let has_subs = !args.no_subs && sub_path.is_some();
+    // Find subtitle file
+    let sub_path = find_subtitle_file(temp_path, &cli.lang);
+    let has_subs = !cli.no_subs && sub_path.is_some();
 
-    if !args.no_subs && !has_subs {
+    if !cli.no_subs && !has_subs {
         eprintln!("Warning: No subtitles found, proceeding without them");
     }
 
     // Determine output path
-    let output_path = match &args.output {
+    let output_path = match &cli.output {
         Some(p) => p.clone(),
         None => {
             let safe_title = sanitize_filename(&video_title);
-            let ext = match args.format {
+            let ext = match cli.format {
                 OutputFormat::Gif => "gif",
                 OutputFormat::Webm => "webm",
                 OutputFormat::Mp4 => "mp4",
@@ -139,10 +169,10 @@ fn main() -> Result<()> {
     // Build and run ffmpeg
     println!("Generating {}...", output_path.display());
 
-    match args.format {
-        OutputFormat::Gif => encode_gif(&video_path, &output_path, &sub_path, &args, start_secs, duration)?,
-        OutputFormat::Webm => encode_webm(&video_path, &output_path, &sub_path, &args, start_secs, duration)?,
-        OutputFormat::Mp4 => encode_mp4(&video_path, &output_path, &sub_path, &args, start_secs, duration)?,
+    match cli.format {
+        OutputFormat::Gif => encode_gif(&ffmpeg, &video_path, &output_path, &sub_path, &cli, start_secs, duration)?,
+        OutputFormat::Webm => encode_webm(&ffmpeg, &video_path, &output_path, &sub_path, &cli, start_secs, duration)?,
+        OutputFormat::Mp4 => encode_mp4(&ffmpeg, &video_path, &output_path, &sub_path, &cli, start_secs, duration)?,
     }
 
     println!("Created: {}", output_path.display());
@@ -150,8 +180,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn get_video_title(url: &str) -> Result<String> {
-    let output = Command::new("yt-dlp")
+fn get_video_title(yt_dlp: &Path, url: &str) -> Result<String> {
+    let output = Command::new(yt_dlp)
         .arg("--get-title")
         .arg("--no-playlist")
         .arg(url)
@@ -171,7 +201,6 @@ fn get_video_title(url: &str) -> Result<String> {
 fn sanitize_filename(name: &str) -> String {
     let re = Regex::new(r#"[<>:"/\\|?*]"#).unwrap();
     let sanitized = re.replace_all(name, "_");
-    // Truncate to reasonable length
     sanitized.chars().take(50).collect()
 }
 
@@ -193,24 +222,24 @@ fn build_subtitle_filter(sub_path: &Option<PathBuf>) -> Option<String> {
 }
 
 fn encode_gif(
+    ffmpeg: &Path,
     video_path: &Path,
     output_path: &Path,
     sub_path: &Option<PathBuf>,
-    args: &Args,
+    cli: &Cli,
     start_secs: f64,
     duration: f64,
 ) -> Result<()> {
     let mut filters = vec![
-        format!("fps={}", args.fps),
-        format!("scale={}:-1:flags=lanczos", args.width),
+        format!("fps={}", cli.fps),
+        format!("scale={}:-1:flags=lanczos", cli.width),
     ];
 
     if let Some(sub_filter) = build_subtitle_filter(sub_path) {
         filters.insert(0, sub_filter);
     }
 
-    // Adjust palette based on quality (max_colors: 16-256)
-    let max_colors = 16 + ((args.quality as f32 / 100.0) * 240.0) as u32;
+    let max_colors = 16 + ((cli.quality as f32 / 100.0) * 240.0) as u32;
 
     let filter_base = filters.join(",");
     let filter_complex = format!(
@@ -218,7 +247,7 @@ fn encode_gif(
         filter_base, max_colors
     );
 
-    let status = Command::new("ffmpeg")
+    let status = Command::new(ffmpeg)
         .arg("-y")
         .arg("-i")
         .arg(video_path)
@@ -240,16 +269,17 @@ fn encode_gif(
 }
 
 fn encode_webm(
+    ffmpeg: &Path,
     video_path: &Path,
     output_path: &Path,
     sub_path: &Option<PathBuf>,
-    args: &Args,
+    cli: &Cli,
     start_secs: f64,
     duration: f64,
 ) -> Result<()> {
     let mut filters = vec![
-        format!("fps={}", args.fps),
-        format!("scale={}:-1", args.width),
+        format!("fps={}", cli.fps),
+        format!("scale={}:-1", cli.width),
     ];
 
     if let Some(sub_filter) = build_subtitle_filter(sub_path) {
@@ -257,11 +287,9 @@ fn encode_webm(
     }
 
     let filter_str = filters.join(",");
+    let crf = 63 - ((cli.quality as f32 / 100.0) * 53.0) as u32;
 
-    // VP9 CRF: 0-63, lower is better. Map quality 1-100 to CRF 63-10
-    let crf = 63 - ((args.quality as f32 / 100.0) * 53.0) as u32;
-
-    let status = Command::new("ffmpeg")
+    let status = Command::new(ffmpeg)
         .arg("-y")
         .arg("-i")
         .arg(video_path)
@@ -277,7 +305,7 @@ fn encode_webm(
         .arg(format!("{}", crf))
         .arg("-b:v")
         .arg("0")
-        .arg("-an") // no audio for clips
+        .arg("-an")
         .arg(output_path)
         .status()
         .context("Failed to run ffmpeg")?;
@@ -290,16 +318,17 @@ fn encode_webm(
 }
 
 fn encode_mp4(
+    ffmpeg: &Path,
     video_path: &Path,
     output_path: &Path,
     sub_path: &Option<PathBuf>,
-    args: &Args,
+    cli: &Cli,
     start_secs: f64,
     duration: f64,
 ) -> Result<()> {
     let mut filters = vec![
-        format!("fps={}", args.fps),
-        format!("scale={}:-1", args.width),
+        format!("fps={}", cli.fps),
+        format!("scale={}:-1", cli.width),
     ];
 
     if let Some(sub_filter) = build_subtitle_filter(sub_path) {
@@ -307,11 +336,9 @@ fn encode_mp4(
     }
 
     let filter_str = filters.join(",");
+    let crf = 51 - ((cli.quality as f32 / 100.0) * 41.0) as u32;
 
-    // H.264 CRF: 0-51, lower is better. Map quality 1-100 to CRF 51-10
-    let crf = 51 - ((args.quality as f32 / 100.0) * 41.0) as u32;
-
-    let status = Command::new("ffmpeg")
+    let status = Command::new(ffmpeg)
         .arg("-y")
         .arg("-i")
         .arg(video_path)
@@ -327,7 +354,7 @@ fn encode_mp4(
         .arg(format!("{}", crf))
         .arg("-preset")
         .arg("medium")
-        .arg("-an") // no audio for clips
+        .arg("-an")
         .arg("-movflags")
         .arg("+faststart")
         .arg(output_path)
@@ -341,23 +368,11 @@ fn encode_mp4(
     Ok(())
 }
 
-fn check_dependencies() -> Result<()> {
-    if which::which("yt-dlp").is_err() {
-        bail!("yt-dlp not found. Install with: nix-shell -p yt-dlp");
-    }
-    if which::which("ffmpeg").is_err() {
-        bail!("ffmpeg not found. Install with: nix-shell -p ffmpeg");
-    }
-    Ok(())
-}
-
 fn parse_timestamp(ts: &str) -> Result<f64> {
-    // Handle pure seconds
     if let Ok(secs) = ts.parse::<f64>() {
         return Ok(secs);
     }
 
-    // Handle MM:SS or HH:MM:SS
     let re = Regex::new(r"^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$").unwrap();
     if let Some(caps) = re.captures(ts) {
         let hours: f64 = caps.get(1).map_or(0.0, |m| m.as_str().parse().unwrap_or(0.0));
@@ -370,10 +385,6 @@ fn parse_timestamp(ts: &str) -> Result<f64> {
 }
 
 fn find_subtitle_file(dir: &Path, lang: &str) -> Option<PathBuf> {
-    // yt-dlp names subs differently based on source:
-    // - Manual: video.en.srt
-    // - Auto-generated: video.en.srt (after conversion, same name)
-    // But sometimes includes source info like video.en-orig.srt
     let entries = std::fs::read_dir(dir).ok()?;
 
     let mut srt_files: Vec<PathBuf> = entries
@@ -385,7 +396,6 @@ fn find_subtitle_file(dir: &Path, lang: &str) -> Option<PathBuf> {
         })
         .collect();
 
-    // Prefer non-auto-generated (shorter name usually)
     srt_files.sort_by_key(|p| p.to_string_lossy().len());
     srt_files.into_iter().next()
 }
