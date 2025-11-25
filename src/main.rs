@@ -1,5 +1,6 @@
 mod config;
 mod setup;
+mod srt;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -32,12 +33,24 @@ struct Cli {
     url: Option<String>,
 
     /// Start timestamp (e.g., "1:30" or "00:01:30" or "90")
-    #[arg(required_unless_present_any = ["command", "setup"])]
+    #[arg(required_unless_present_any = ["command", "setup", "from"])]
     start: Option<String>,
 
     /// End timestamp (e.g., "1:35" or "00:01:35" or "95")
-    #[arg(required_unless_present_any = ["command", "setup"])]
+    #[arg(required_unless_present_any = ["command", "setup", "from"])]
     end: Option<String>,
+
+    /// Starting dialogue text to search for in subtitles (alternative to timestamps)
+    #[arg(long, conflicts_with_all = ["start", "end"])]
+    from: Option<String>,
+
+    /// Ending dialogue text (optional - if omitted, clips around --from with padding)
+    #[arg(long, requires = "from")]
+    to: Option<String>,
+
+    /// Padding in seconds around dialogue clips (default: 0.5s with --to, 2s without)
+    #[arg(long)]
+    pad: Option<f64>,
 
     /// Output filename (auto-generated from video title if not specified)
     #[arg(short, long)]
@@ -85,24 +98,9 @@ fn main() -> Result<()> {
 
     // Ensure we have required args for clip mode
     let url = cli.url.as_ref().context("URL is required")?;
-    let start = cli.start.as_ref().context("Start timestamp is required")?;
-    let end = cli.end.as_ref().context("End timestamp is required")?;
 
     // Ensure tools are configured
     let config = setup::ensure_setup()?;
-
-    let start_secs = parse_timestamp(start)?;
-    let end_secs = parse_timestamp(end)?;
-
-    if end_secs <= start_secs {
-        bail!("End time must be after start time");
-    }
-
-    let duration = end_secs - start_secs;
-    println!(
-        "Clipping {:.1}s from {} to {}",
-        duration, start, end
-    );
 
     let temp_dir = TempDir::new().context("Failed to create temp directory")?;
     let temp_path = temp_dir.path();
@@ -114,7 +112,9 @@ fn main() -> Result<()> {
     let video_title = get_video_title(&yt_dlp, url)?;
     println!("Video: {}", video_title);
 
-    // Download video
+    // Download video (always get subs for dialogue mode, or if user wants them)
+    let need_subs = cli.from.is_some() || !cli.no_subs;
+
     println!("Downloading video...");
     let video_path = temp_path.join("video.mp4");
     let mut dl_cmd = Command::new(&yt_dlp);
@@ -125,7 +125,7 @@ fn main() -> Result<()> {
         .arg(&video_path)
         .arg("--no-playlist");
 
-    if !cli.no_subs {
+    if need_subs {
         dl_cmd
             .arg("--write-sub")
             .arg("--write-auto-sub")
@@ -144,8 +144,62 @@ fn main() -> Result<()> {
 
     // Find subtitle file
     let sub_path = find_subtitle_file(temp_path, &cli.lang);
-    let has_subs = !cli.no_subs && sub_path.is_some();
 
+    // Determine start/end times
+    let (start_secs, end_secs) = if let Some(ref from_text) = cli.from {
+        // Dialogue mode - search subtitles
+        let sub_file = sub_path.as_ref()
+            .context("Subtitles required for dialogue search but none found")?;
+
+        let entries = srt::parse_srt(sub_file)?;
+
+        let from_entry = srt::find_dialogue(&entries, from_text)
+            .with_context(|| format!("Could not find starting dialogue: \"{}\"", from_text))?;
+
+        let (start, end, default_pad) = if let Some(ref to_text) = cli.to {
+            // Range mode: from dialogue to dialogue
+            let to_entry = srt::find_dialogue(&entries, to_text)
+                .with_context(|| format!("Could not find ending dialogue: \"{}\"", to_text))?;
+
+            if to_entry.end < from_entry.start {
+                bail!("Ending dialogue appears before starting dialogue");
+            }
+
+            (from_entry.start, to_entry.end, 0.5)
+        } else {
+            // Single quote mode: just the one subtitle entry
+            (from_entry.start, from_entry.end, 2.0)
+        };
+
+        let pad = cli.pad.unwrap_or(default_pad);
+        let start_padded = (start - pad).max(0.0);
+        let end_padded = end + pad;
+
+        println!("Found dialogue at {:.1}s - {:.1}s (with {:.1}s padding)", start, end, pad);
+
+        (start_padded, end_padded)
+    } else {
+        // Timestamp mode
+        let start = cli.start.as_ref().context("Start timestamp is required")?;
+        let end = cli.end.as_ref().context("End timestamp is required")?;
+
+        let start_secs = parse_timestamp(start)?;
+        let end_secs = parse_timestamp(end)?;
+
+        if end_secs <= start_secs {
+            bail!("End time must be after start time");
+        }
+
+        (start_secs, end_secs)
+    };
+
+    let duration = end_secs - start_secs;
+    println!(
+        "Clipping {:.1}s from {:.1}s to {:.1}s",
+        duration, start_secs, end_secs
+    );
+
+    let has_subs = !cli.no_subs && sub_path.is_some();
     if !cli.no_subs && !has_subs {
         eprintln!("Warning: No subtitles found, proceeding without them");
     }
