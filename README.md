@@ -1,6 +1,6 @@
 # gifclip
 
-Download YouTube clips and export as GIFs (or video) with burned-in subtitles.
+Create GIFs (or video clips) with burned-in subtitles from YouTube videos or local files.
 
 ## Installation
 
@@ -90,6 +90,26 @@ gifclip "URL" --from "quote" --pad 3
 gifclip "URL" --from "quote" --pad-before 1 --pad-after 5
 ```
 
+### Local File Mode
+
+Use local video files or direct video URLs instead of YouTube:
+
+```bash
+# Local video file
+gifclip -i movie.mp4 1:30 1:45
+
+# With external subtitle file
+gifclip -i movie.mkv --subs movie.srt 0:00 0:30
+
+# Direct video URL (not YouTube)
+gifclip -i "https://example.com/video.mp4" 0:10 0:20
+
+# Subtitle URL
+gifclip -i movie.mp4 --subs "https://example.com/subs.srt" 0:00 1:00
+```
+
+For local files, gifclip will automatically try to extract embedded subtitles. Provide `--subs` to use an external subtitle file instead, or `--no-subs` to skip subtitles entirely.
+
 ### Output Formats
 
 ```bash
@@ -107,11 +127,13 @@ gifclip "URL" 1:30 1:45 -f mp4
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `-i, --input <FILE_OR_URL>` | Local video file or direct URL (instead of YouTube) | - |
+| `--subs <FILE_OR_URL>` | External subtitle file or URL | - |
 | `-o, --output <FILE>` | Output filename | Auto-generated from video title |
 | `-f, --format <FMT>` | Output format: `gif`, `webm`, `mp4` | `gif` |
 | `-w, --width <PX>` | Width in pixels (height scales proportionally) | `480` |
 | `--fps <N>` | Frames per second | `15` |
-| `--lang <CODE>` | Subtitle language code | `en` |
+| `--lang <CODE>` | Subtitle language code (YouTube only) | `en` |
 | `--no-subs` | Skip subtitles | false |
 | `-q, --quality <1-100>` | Quality (higher = better, larger file) | `80` |
 
@@ -135,6 +157,12 @@ gifclip "URL" 0:30 0:45 --no-subs
 
 # French subtitles
 gifclip "URL" 1:00 1:15 --lang fr
+
+# Local file with embedded subtitles (auto-extracted)
+gifclip -i movie.mkv 0:30 0:45
+
+# Local file with external subs
+gifclip -i movie.mp4 --subs subs.srt 1:00 1:30
 ```
 
 ## Configuration

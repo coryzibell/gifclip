@@ -5,6 +5,7 @@ mod srt;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use regex::Regex;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
@@ -46,6 +47,17 @@ DIALOGUE MODE:
     gifclip \"URL\" --from \"quote\" --pad 3
     gifclip \"URL\" --from \"quote\" --pad-before 1 --pad-after 5
 
+LOCAL FILE MODE:
+  gifclip --input <FILE_OR_URL> <START> <END>
+
+  Use a local video file or direct video URL instead of YouTube.
+  Optionally provide subtitles with --subs.
+
+  Examples:
+    gifclip -i movie.mp4 1:30 1:45
+    gifclip -i movie.mkv --subs movie.srt 0:00 0:30
+    gifclip -i \"https://example.com/video.mp4\" 0:10 0:20
+
 SETUP:
   gifclip --setup
 
@@ -59,9 +71,17 @@ struct Cli {
     #[arg(long)]
     setup: bool,
 
-    /// YouTube URL
-    #[arg(required_unless_present_any = ["command", "setup"])]
+    /// YouTube URL (positional argument for YouTube mode)
+    #[arg(required_unless_present_any = ["command", "setup", "input"])]
     url: Option<String>,
+
+    /// Local video file path or direct video URL (alternative to YouTube)
+    #[arg(short, long, conflicts_with = "url")]
+    input: Option<String>,
+
+    /// External subtitle file path or URL (optional, for use with --input)
+    #[arg(long)]
+    subs: Option<String>,
 
     /// Start timestamp (e.g., "1:30" or "00:01:30" or "90")
     #[arg(required_unless_present_any = ["command", "setup", "from"])]
@@ -135,54 +155,115 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Ensure we have required args for clip mode
-    let url = cli.url.as_ref().context("URL is required")?;
-
     // Ensure tools are configured
     let config = setup::ensure_setup()?;
 
     let temp_dir = TempDir::new().context("Failed to create temp directory")?;
     let temp_path = temp_dir.path();
 
-    let yt_dlp = config.yt_dlp_path()?;
     let ffmpeg = config.ffmpeg_path()?;
 
-    // Get video title for auto-naming
-    let video_title = get_video_title(&yt_dlp, url)?;
-    println!("Video: {}", video_title);
+    // Determine if we're in YouTube mode or local file mode
+    let (video_path, video_title, sub_path) = if let Some(ref input) = cli.input {
+        // Local file mode (or direct URL)
+        let video_path = if is_url(input) {
+            println!("Downloading video...");
+            let ext = Path::new(input)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("mp4");
+            let dest = temp_path.join(format!("video.{}", ext));
+            download_file(input, &dest)?;
+            dest
+        } else {
+            let path = PathBuf::from(input);
+            if !path.exists() {
+                bail!("Input file does not exist: {}", input);
+            }
+            path
+        };
 
-    // Download video (always get subs for dialogue mode, or if user wants them)
-    let need_subs = cli.from.is_some() || !cli.no_subs;
+        let video_title = get_filename_from_path(input);
+        println!("Video: {}", video_title);
 
-    println!("Downloading video...");
-    let video_path = temp_path.join("video.mp4");
-    let mut dl_cmd = Command::new(&yt_dlp);
-    dl_cmd
-        .arg("-f")
-        .arg("b[ext=mp4]/b")
-        .arg("-o")
-        .arg(&video_path)
-        .arg("--no-playlist");
+        // Handle subtitles for local file mode
+        let sub_path = if let Some(ref subs_input) = cli.subs {
+            // User provided explicit subtitle file/URL
+            let sub_path = if is_url(subs_input) {
+                println!("Downloading subtitles...");
+                let ext = Path::new(subs_input)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("srt");
+                let dest = temp_path.join(format!("subs.{}", ext));
+                download_file(subs_input, &dest)?;
+                dest
+            } else {
+                let path = PathBuf::from(subs_input);
+                if !path.exists() {
+                    bail!("Subtitle file does not exist: {}", subs_input);
+                }
+                path
+            };
+            Some(sub_path)
+        } else if !cli.no_subs {
+            // Try to extract embedded subtitles
+            let extracted_subs = temp_path.join("extracted.srt");
+            if extract_embedded_subs(&ffmpeg, &video_path, &extracted_subs)? {
+                println!("Extracted embedded subtitles");
+                Some(extracted_subs)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-    if need_subs {
+        (video_path, video_title, sub_path)
+    } else {
+        // YouTube mode
+        let url = cli.url.as_ref().context("URL is required")?;
+        let yt_dlp = config.yt_dlp_path()?;
+
+        // Get video title for auto-naming
+        let video_title = get_video_title(&yt_dlp, url)?;
+        println!("Video: {}", video_title);
+
+        // Download video (always get subs for dialogue mode, or if user wants them)
+        let need_subs = cli.from.is_some() || !cli.no_subs;
+
+        println!("Downloading video...");
+        let video_path = temp_path.join("video.mp4");
+        let mut dl_cmd = Command::new(&yt_dlp);
         dl_cmd
-            .arg("--write-sub")
-            .arg("--write-auto-sub")
-            .arg("--sub-lang")
-            .arg(&cli.lang)
-            .arg("--convert-subs")
-            .arg("srt");
-    }
+            .arg("-f")
+            .arg("b[ext=mp4]/b")
+            .arg("-o")
+            .arg(&video_path)
+            .arg("--no-playlist");
 
-    dl_cmd.arg(url);
+        if need_subs {
+            dl_cmd
+                .arg("--write-sub")
+                .arg("--write-auto-sub")
+                .arg("--sub-lang")
+                .arg(&cli.lang)
+                .arg("--convert-subs")
+                .arg("srt");
+        }
 
-    let dl_status = dl_cmd.status().context("Failed to run yt-dlp")?;
-    if !dl_status.success() {
-        bail!("yt-dlp failed to download video");
-    }
+        dl_cmd.arg(url);
 
-    // Find subtitle file
-    let sub_path = find_subtitle_file(temp_path, &cli.lang);
+        let dl_status = dl_cmd.status().context("Failed to run yt-dlp")?;
+        if !dl_status.success() {
+            bail!("yt-dlp failed to download video");
+        }
+
+        // Find subtitle file
+        let sub_path = find_subtitle_file(temp_path, &cli.lang);
+
+        (video_path, video_title, sub_path)
+    };
 
     // Determine start/end times
     let (start_secs, end_secs) = if let Some(ref from_text) = cli.from {
@@ -499,4 +580,49 @@ fn find_subtitle_file(dir: &Path, lang: &str) -> Option<PathBuf> {
 
     srt_files.sort_by_key(|p| p.to_string_lossy().len());
     srt_files.into_iter().next()
+}
+
+fn is_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+fn download_file(url: &str, dest: &Path) -> Result<()> {
+    let response = reqwest::blocking::get(url)
+        .with_context(|| format!("Failed to download {}", url))?;
+
+    if !response.status().is_success() {
+        bail!("Failed to download {}: HTTP {}", url, response.status());
+    }
+
+    let bytes = response.bytes()
+        .with_context(|| format!("Failed to read response from {}", url))?;
+
+    fs::write(dest, &bytes)
+        .with_context(|| format!("Failed to write to {}", dest.display()))?;
+
+    Ok(())
+}
+
+fn extract_embedded_subs(ffmpeg: &Path, video_path: &Path, output_path: &Path) -> Result<bool> {
+    // Try to extract embedded subtitles using ffmpeg
+    let status = Command::new(ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(video_path)
+        .arg("-map")
+        .arg("0:s:0")  // First subtitle stream
+        .arg(output_path)
+        .stderr(Stdio::null())
+        .status()
+        .context("Failed to run ffmpeg for subtitle extraction")?;
+
+    Ok(status.success())
+}
+
+fn get_filename_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video")
+        .to_string()
 }
