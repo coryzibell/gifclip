@@ -7,7 +7,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use tar::Archive;
