@@ -49,8 +49,16 @@ struct Cli {
     to: Option<String>,
 
     /// Padding in seconds around dialogue clips (default: 0.5s with --to, 2s without)
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["pad_before", "pad_after"])]
     pad: Option<f64>,
+
+    /// Padding before the dialogue starts (overrides --pad)
+    #[arg(long)]
+    pad_before: Option<f64>,
+
+    /// Padding after the dialogue ends (overrides --pad)
+    #[arg(long)]
+    pad_after: Option<f64>,
 
     /// Output filename (auto-generated from video title if not specified)
     #[arg(short, long)]
@@ -171,11 +179,15 @@ fn main() -> Result<()> {
             (from_entry.start, from_entry.end, 2.0)
         };
 
-        let pad = cli.pad.unwrap_or(default_pad);
-        let start_padded = (start - pad).max(0.0);
-        let end_padded = end + pad;
+        let pad_before = cli.pad_before.or(cli.pad).unwrap_or(default_pad);
+        let pad_after = cli.pad_after.or(cli.pad).unwrap_or(default_pad);
+        let start_padded = (start - pad_before).max(0.0);
+        let end_padded = end + pad_after;
 
-        println!("Found dialogue at {:.1}s - {:.1}s (with {:.1}s padding)", start, end, pad);
+        println!(
+            "Found dialogue at {:.1}s - {:.1}s (padding: {:.1}s before, {:.1}s after)",
+            start, end, pad_before, pad_after
+        );
 
         (start_padded, end_padded)
     } else {
