@@ -1,6 +1,6 @@
 # gifclip
 
-Create GIFs (or video clips) with burned-in subtitles from YouTube videos or local files.
+Create GIFs (or video clips) with burned-in subtitles from YouTube, local files, or direct URLs.
 
 ## Installation
 
@@ -51,12 +51,30 @@ environment.systemPackages = with pkgs; [ yt-dlp ffmpeg ];
 
 ## Usage
 
+### Basic Usage
+
+```bash
+gifclip <INPUT> <START> <END>
+```
+
+Where `<INPUT>` can be:
+- **YouTube URL** - Downloads via yt-dlp, auto-fetches subtitles
+- **Local file** - Uses embedded subs or looks for matching `.srt` file
+- **Direct URL** - Downloads video, extracts embedded subs if available
+
 ### Timestamp Mode
 
 Clip a video using specific start and end timestamps:
 
 ```bash
+# YouTube
 gifclip "https://youtube.com/watch?v=..." 1:30 1:45
+
+# Local file
+gifclip movie.mp4 0:45 0:59
+
+# Direct URL
+gifclip "https://example.com/video.mp4" 0:10 0:20
 ```
 
 Timestamps support multiple formats:
@@ -90,25 +108,28 @@ gifclip "URL" --from "quote" --pad 3
 gifclip "URL" --from "quote" --pad-before 1 --pad-after 5
 ```
 
-### Local File Mode
+### Subtitle Handling
 
-Use local video files or direct video URLs instead of YouTube:
+gifclip automatically finds subtitles based on input type:
+
+| Input Type | Subtitle Search Order |
+|------------|----------------------|
+| YouTube | Fetches from YouTube (auto + uploaded) |
+| Local file | 1. Embedded subs, 2. Adjacent `.srt`/`.ass`/etc. |
+| Direct URL | Embedded subs only |
+
+Override with `--subs` or disable with `--no-subs`:
 
 ```bash
-# Local video file
-gifclip -i movie.mp4 1:30 1:45
+# Use specific subtitle file
+gifclip movie.mp4 1:30 1:45 --subs custom.srt
 
-# With external subtitle file
-gifclip -i movie.mkv --subs movie.srt 0:00 0:30
+# Use subtitle URL
+gifclip movie.mp4 1:30 1:45 --subs "https://example.com/subs.srt"
 
-# Direct video URL (not YouTube)
-gifclip -i "https://example.com/video.mp4" 0:10 0:20
-
-# Subtitle URL
-gifclip -i movie.mp4 --subs "https://example.com/subs.srt" 0:00 1:00
+# Skip subtitles entirely
+gifclip movie.mp4 1:30 1:45 --no-subs
 ```
-
-For local files, gifclip will automatically try to extract embedded subtitles. Provide `--subs` to use an external subtitle file instead, or `--no-subs` to skip subtitles entirely.
 
 ### Output Formats
 
@@ -127,9 +148,8 @@ gifclip "URL" 1:30 1:45 -f mp4
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-i, --input <FILE_OR_URL>` | Local video file or direct URL (instead of YouTube) | - |
-| `--subs <FILE_OR_URL>` | External subtitle file or URL | - |
-| `-o, --output <FILE>` | Output filename | Auto-generated from video title |
+| `--subs <FILE_OR_URL>` | External subtitle file or URL | Auto-detect |
+| `-o, --output <FILE>` | Output filename | Auto-generated |
 | `-f, --format <FMT>` | Output format: `gif`, `webm`, `mp4` | `gif` |
 | `-w, --width <PX>` | Width in pixels (height scales proportionally) | `480` |
 | `--fps <N>` | Frames per second | `15` |
@@ -140,7 +160,7 @@ gifclip "URL" 1:30 1:45 -f mp4
 ### Examples
 
 ```bash
-# Basic GIF with subtitles
+# Basic GIF with subtitles from YouTube
 gifclip "https://youtube.com/watch?v=abc123" 0:45 0:59
 
 # Higher quality MP4, 720px wide
@@ -152,17 +172,14 @@ gifclip "URL" --from "Frankly my dear" --pad-after 3
 # Clip a conversation between two lines
 gifclip "URL" --from "What is the Matrix?" --to "No one can be told"
 
-# Skip subtitles entirely
-gifclip "URL" 0:30 0:45 --no-subs
+# Local file with auto-detected subtitles
+gifclip movie.mkv 0:30 0:45
 
-# French subtitles
+# Local file with custom subs
+gifclip movie.mp4 --subs movie.srt 1:00 1:30
+
+# French subtitles from YouTube
 gifclip "URL" 1:00 1:15 --lang fr
-
-# Local file with embedded subtitles (auto-extracted)
-gifclip -i movie.mkv 0:30 0:45
-
-# Local file with external subs
-gifclip -i movie.mp4 --subs subs.srt 1:00 1:30
 ```
 
 ## Configuration

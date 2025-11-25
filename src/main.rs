@@ -20,20 +20,21 @@ enum OutputFormat {
 #[derive(Parser)]
 #[command(name = "gifclip")]
 #[command(version)]
-#[command(about = "Download a YouTube clip and export as GIF/video with burned-in subtitles")]
-#[command(long_about = "Download a YouTube clip and export as GIF/video with burned-in subtitles.
+#[command(about = "Create GIFs/videos with burned-in subtitles from YouTube, local files, or URLs")]
+#[command(long_about = "Create GIFs/videos with burned-in subtitles from YouTube, local files, or URLs.
 
 TIMESTAMP MODE:
-  gifclip <URL> <START> <END>
+  gifclip <INPUT> <START> <END>
 
   Clip a video using specific timestamps.
 
   Examples:
     gifclip \"https://youtube.com/watch?v=...\" 1:30 1:45
-    gifclip \"URL\" 0:45 0:59 -f mp4 -w 720
+    gifclip movie.mp4 0:45 0:59 -f mp4 -w 720
+    gifclip \"https://example.com/video.mp4\" 0:10 0:20
 
 DIALOGUE MODE:
-  gifclip <URL> --from \"dialogue text\" [--to \"ending text\"]
+  gifclip <INPUT> --from \"dialogue text\" [--to \"ending text\"]
 
   Search subtitles for dialogue and clip around it automatically.
 
@@ -47,16 +48,10 @@ DIALOGUE MODE:
     gifclip \"URL\" --from \"quote\" --pad 3
     gifclip \"URL\" --from \"quote\" --pad-before 1 --pad-after 5
 
-LOCAL FILE MODE:
-  gifclip --input <FILE_OR_URL> <START> <END>
-
-  Use a local video file or direct video URL instead of YouTube.
-  Optionally provide subtitles with --subs.
-
-  Examples:
-    gifclip -i movie.mp4 1:30 1:45
-    gifclip -i movie.mkv --subs movie.srt 0:00 0:30
-    gifclip -i \"https://example.com/video.mp4\" 0:10 0:20
+INPUT TYPES:
+  - YouTube URL: Downloads via yt-dlp, auto-fetches subtitles
+  - Local file: Uses embedded subs or looks for matching .srt file
+  - Direct URL: Downloads video, uses --subs if provided
 
 SETUP:
   gifclip --setup
@@ -71,17 +66,9 @@ struct Cli {
     #[arg(long)]
     setup: bool,
 
-    /// YouTube URL (positional argument for YouTube mode)
-    #[arg(required_unless_present_any = ["command", "setup", "input"])]
-    url: Option<String>,
-
-    /// Local video file path or direct video URL (alternative to YouTube)
-    #[arg(short, long, conflicts_with = "url")]
+    /// Input: YouTube URL, local file path, or direct video URL
+    #[arg(required_unless_present_any = ["command", "setup"])]
     input: Option<String>,
-
-    /// External subtitle file path or URL (optional, for use with --input)
-    #[arg(long)]
-    subs: Option<String>,
 
     /// Start timestamp (e.g., "1:30" or "00:01:30" or "90")
     #[arg(required_unless_present_any = ["command", "setup", "from"])]
@@ -90,6 +77,10 @@ struct Cli {
     /// End timestamp (e.g., "1:35" or "00:01:35" or "95")
     #[arg(required_unless_present_any = ["command", "setup", "from"])]
     end: Option<String>,
+
+    /// External subtitle file path or URL (overrides auto-detected subs)
+    #[arg(long)]
+    subs: Option<String>,
 
     /// Starting dialogue text to search for in subtitles (alternative to timestamps)
     #[arg(long, conflicts_with_all = ["start", "end"])]
@@ -163,74 +154,18 @@ fn main() -> Result<()> {
 
     let ffmpeg = config.ffmpeg_path()?;
 
-    // Determine if we're in YouTube mode or local file mode
-    let (video_path, video_title, sub_path) = if let Some(ref input) = cli.input {
-        // Local file mode (or direct URL)
-        let video_path = if is_url(input) {
-            println!("Downloading video...");
-            let ext = Path::new(input)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("mp4");
-            let dest = temp_path.join(format!("video.{}", ext));
-            download_file(input, &dest)?;
-            dest
-        } else {
-            let path = PathBuf::from(input);
-            if !path.exists() {
-                bail!("Input file does not exist: {}", input);
-            }
-            path
-        };
+    let input = cli.input.as_ref().context("Input is required")?;
 
-        let video_title = get_filename_from_path(input);
-        println!("Video: {}", video_title);
-
-        // Handle subtitles for local file mode
-        let sub_path = if let Some(ref subs_input) = cli.subs {
-            // User provided explicit subtitle file/URL
-            let sub_path = if is_url(subs_input) {
-                println!("Downloading subtitles...");
-                let ext = Path::new(subs_input)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("srt");
-                let dest = temp_path.join(format!("subs.{}", ext));
-                download_file(subs_input, &dest)?;
-                dest
-            } else {
-                let path = PathBuf::from(subs_input);
-                if !path.exists() {
-                    bail!("Subtitle file does not exist: {}", subs_input);
-                }
-                path
-            };
-            Some(sub_path)
-        } else if !cli.no_subs {
-            // Try to extract embedded subtitles
-            let extracted_subs = temp_path.join("extracted.srt");
-            if extract_embedded_subs(&ffmpeg, &video_path, &extracted_subs)? {
-                println!("Extracted embedded subtitles");
-                Some(extracted_subs)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        (video_path, video_title, sub_path)
-    } else {
-        // YouTube mode
-        let url = cli.url.as_ref().context("URL is required")?;
+    // Determine input type and get video + subtitles
+    let (video_path, video_title, sub_path) = if is_url(input) && is_youtube_url(input) {
+        // YouTube mode - use yt-dlp
         let yt_dlp = config.yt_dlp_path()?;
 
-        // Get video title for auto-naming
-        let video_title = get_video_title(&yt_dlp, url)?;
+        let video_title = get_video_title(&yt_dlp, input)?;
         println!("Video: {}", video_title);
 
         // Download video (always get subs for dialogue mode, or if user wants them)
-        let need_subs = cli.from.is_some() || !cli.no_subs;
+        let need_subs = cli.subs.is_none() && (cli.from.is_some() || !cli.no_subs);
 
         println!("Downloading video...");
         let video_path = temp_path.join("video.mp4");
@@ -252,15 +187,76 @@ fn main() -> Result<()> {
                 .arg("srt");
         }
 
-        dl_cmd.arg(url);
+        dl_cmd.arg(input);
 
         let dl_status = dl_cmd.status().context("Failed to run yt-dlp")?;
         if !dl_status.success() {
             bail!("yt-dlp failed to download video");
         }
 
-        // Find subtitle file
-        let sub_path = find_subtitle_file(temp_path, &cli.lang);
+        // Handle subtitles
+        let sub_path = if let Some(ref subs_input) = cli.subs {
+            Some(resolve_subs_input(subs_input, temp_path)?)
+        } else {
+            find_subtitle_file(temp_path, &cli.lang)
+        };
+
+        (video_path, video_title, sub_path)
+    } else if is_url(input) {
+        // Direct URL mode - download video, check embedded subs only
+        println!("Downloading video...");
+        let ext = Path::new(input)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp4");
+        let video_path = temp_path.join(format!("video.{}", ext));
+        download_file(input, &video_path)?;
+
+        let video_title = get_filename_from_url(input);
+        println!("Video: {}", video_title);
+
+        // Handle subtitles - explicit subs or try embedded
+        let sub_path = if let Some(ref subs_input) = cli.subs {
+            Some(resolve_subs_input(subs_input, temp_path)?)
+        } else if !cli.no_subs {
+            let extracted_subs = temp_path.join("extracted.srt");
+            if extract_embedded_subs(&ffmpeg, &video_path, &extracted_subs)? {
+                println!("Extracted embedded subtitles");
+                Some(extracted_subs)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        (video_path, video_title, sub_path)
+    } else {
+        // Local file mode - check embedded subs, then adjacent .srt
+        let video_path = PathBuf::from(input);
+        if !video_path.exists() {
+            bail!("Input file does not exist: {}", input);
+        }
+
+        let video_title = get_filename_from_path(input);
+        println!("Video: {}", video_title);
+
+        // Handle subtitles - explicit, embedded, or adjacent file
+        let sub_path = if let Some(ref subs_input) = cli.subs {
+            Some(resolve_subs_input(subs_input, temp_path)?)
+        } else if !cli.no_subs {
+            // First try embedded subs
+            let extracted_subs = temp_path.join("extracted.srt");
+            if extract_embedded_subs(&ffmpeg, &video_path, &extracted_subs)? {
+                println!("Extracted embedded subtitles");
+                Some(extracted_subs)
+            } else {
+                // Look for adjacent subtitle file with same name
+                find_adjacent_subtitle(&video_path)
+            }
+        } else {
+            None
+        };
 
         (video_path, video_title, sub_path)
     };
@@ -586,6 +582,10 @@ fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
+fn is_youtube_url(s: &str) -> bool {
+    s.contains("youtube.com") || s.contains("youtu.be")
+}
+
 fn download_file(url: &str, dest: &Path) -> Result<()> {
     let response = reqwest::blocking::get(url)
         .with_context(|| format!("Failed to download {}", url))?;
@@ -625,4 +625,54 @@ fn get_filename_from_path(path: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("video")
         .to_string()
+}
+
+fn get_filename_from_url(url: &str) -> String {
+    // Try to extract filename from URL path
+    url.split('/')
+        .last()
+        .and_then(|s| s.split('?').next())
+        .map(|s| {
+            Path::new(s)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(s)
+                .to_string()
+        })
+        .unwrap_or_else(|| "video".to_string())
+}
+
+fn resolve_subs_input(subs_input: &str, temp_path: &Path) -> Result<PathBuf> {
+    if is_url(subs_input) {
+        println!("Downloading subtitles...");
+        let ext = Path::new(subs_input)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("srt");
+        let dest = temp_path.join(format!("subs.{}", ext));
+        download_file(subs_input, &dest)?;
+        Ok(dest)
+    } else {
+        let path = PathBuf::from(subs_input);
+        if !path.exists() {
+            bail!("Subtitle file does not exist: {}", subs_input);
+        }
+        Ok(path)
+    }
+}
+
+fn find_adjacent_subtitle(video_path: &Path) -> Option<PathBuf> {
+    let stem = video_path.file_stem()?;
+    let parent = video_path.parent()?;
+
+    // Check for common subtitle extensions
+    for ext in &["srt", "ass", "ssa", "sub", "vtt"] {
+        let sub_path = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
+        if sub_path.exists() {
+            println!("Found adjacent subtitle file: {}", sub_path.display());
+            return Some(sub_path);
+        }
+    }
+
+    None
 }
