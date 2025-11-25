@@ -1,0 +1,13 @@
+[package]
+name = "gifclip"
+version = "0.1.0"
+edition = "2024"
+description = "Download YouTube clips and export as GIFs with burned-in subtitles"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+which = "7"
+tempfile = "3"
+regex = "1"
