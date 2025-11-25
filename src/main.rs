@@ -18,8 +18,39 @@ enum OutputFormat {
 
 #[derive(Parser)]
 #[command(name = "gifclip")]
-#[command(about = "Download a YouTube clip and export as GIF/video with burned-in subtitles")]
 #[command(version)]
+#[command(about = "Download a YouTube clip and export as GIF/video with burned-in subtitles")]
+#[command(long_about = "Download a YouTube clip and export as GIF/video with burned-in subtitles.
+
+TIMESTAMP MODE:
+  gifclip <URL> <START> <END>
+
+  Clip a video using specific timestamps.
+
+  Examples:
+    gifclip \"https://youtube.com/watch?v=...\" 1:30 1:45
+    gifclip \"URL\" 0:45 0:59 -f mp4 -w 720
+
+DIALOGUE MODE:
+  gifclip <URL> --from \"dialogue text\" [--to \"ending text\"]
+
+  Search subtitles for dialogue and clip around it automatically.
+
+  Single quote (2s default padding):
+    gifclip \"URL\" --from \"I'll be back\"
+
+  Dialogue range (0.5s default padding):
+    gifclip \"URL\" --from \"Here's looking\" --to \"kid\"
+
+  Custom padding:
+    gifclip \"URL\" --from \"quote\" --pad 3
+    gifclip \"URL\" --from \"quote\" --pad-before 1 --pad-after 5
+
+SETUP:
+  gifclip --setup
+
+  Configure whether to use system-installed tools (yt-dlp, ffmpeg)
+  or download managed copies to ~/.gifclip/tools/")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
