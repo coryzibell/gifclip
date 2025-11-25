@@ -1,6 +1,6 @@
 [package]
 name = "gifclip"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Download YouTube clips and export as GIFs with burned-in subtitles"
 license = "MIT"
