@@ -23,16 +23,20 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    /// Run interactive setup to configure tool sources
+    #[arg(long)]
+    setup: bool,
+
     /// YouTube URL
-    #[arg(required_unless_present = "command")]
+    #[arg(required_unless_present_any = ["command", "setup"])]
     url: Option<String>,
 
     /// Start timestamp (e.g., "1:30" or "00:01:30" or "90")
-    #[arg(required_unless_present = "command")]
+    #[arg(required_unless_present_any = ["command", "setup"])]
     start: Option<String>,
 
     /// End timestamp (e.g., "1:35" or "00:01:35" or "95")
-    #[arg(required_unless_present = "command")]
+    #[arg(required_unless_present_any = ["command", "setup"])]
     end: Option<String>,
 
     /// Output filename (auto-generated from video title if not specified)
@@ -73,8 +77,8 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Handle subcommands
-    if let Some(Commands::Setup) = cli.command {
+    // Handle setup flag or subcommand
+    if cli.setup || matches!(cli.command, Some(Commands::Setup)) {
         setup::run_setup()?;
         return Ok(());
     }
