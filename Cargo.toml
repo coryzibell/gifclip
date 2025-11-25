@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Download YouTube clips and export as GIFs with burned-in subtitles"
 license = "MIT"
+repository = "https://github.com/coryzibell/gifclip"
+keywords = ["youtube", "gif", "video", "subtitles", "cli"]
+categories = ["command-line-utilities", "multimedia::video"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
