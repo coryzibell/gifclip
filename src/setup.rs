@@ -1,12 +1,16 @@
 use anyhow::{bail, Context, Result};
 use dialoguer::Select;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use tar::Archive;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use tar::Archive;
 
 use crate::config::{Config, ToolSource};
 
@@ -130,6 +134,10 @@ fn download_ytdlp(tools_dir: &Path) -> Result<()> {
     let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
     #[cfg(target_os = "windows")]
     let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+    #[cfg(target_os = "freebsd")]
+    let url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd")))]
+    bail!("Managed tool download is not supported on this platform. Please install yt-dlp manually.");
 
     #[cfg(windows)]
     let dest = tools_dir.join("yt-dlp.exe");
@@ -165,6 +173,18 @@ fn download_ffmpeg(tools_dir: &Path) -> Result<()> {
     // Use ffmpeg-static builds from https://johnvansickle.com/ffmpeg/ (Linux)
     // or https://evermeet.cx/ffmpeg/ (macOS)
     // or https://www.gyan.dev/ffmpeg/builds/ (Windows)
+    // FreeBSD and other platforms: no pre-built binaries available
+
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        target_os = "macos",
+        target_os = "windows"
+    )))]
+    {
+        println!();
+        bail!("Managed ffmpeg download is not supported on this platform. Please install ffmpeg manually.");
+    }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
@@ -175,25 +195,34 @@ fn download_ffmpeg(tools_dir: &Path) -> Result<()> {
     #[cfg(target_os = "windows")]
     let url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 
-    let response = reqwest::blocking::get(url)
-        .context("Failed to download ffmpeg")?;
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        target_os = "macos",
+        target_os = "windows"
+    ))]
+    {
+        let response = reqwest::blocking::get(url)
+            .context("Failed to download ffmpeg")?;
 
-    if !response.status().is_success() {
-        bail!("Failed to download ffmpeg: HTTP {}", response.status());
+        if !response.status().is_success() {
+            bail!("Failed to download ffmpeg: HTTP {}", response.status());
+        }
+
+        let bytes = response.bytes().context("Failed to read ffmpeg download")?;
+
+        #[cfg(target_os = "linux")]
+        extract_ffmpeg_linux(&bytes, tools_dir)?;
+
+        #[cfg(target_os = "macos")]
+        extract_ffmpeg_macos(&bytes, tools_dir)?;
+
+        #[cfg(target_os = "windows")]
+        extract_ffmpeg_windows(&bytes, tools_dir)?;
+
+        println!("done");
     }
 
-    let bytes = response.bytes().context("Failed to read ffmpeg download")?;
-
-    #[cfg(target_os = "linux")]
-    extract_ffmpeg_linux(&bytes, tools_dir)?;
-
-    #[cfg(target_os = "macos")]
-    extract_ffmpeg_macos(&bytes, tools_dir)?;
-
-    #[cfg(target_os = "windows")]
-    extract_ffmpeg_windows(&bytes, tools_dir)?;
-
-    println!("done");
     Ok(())
 }
 
