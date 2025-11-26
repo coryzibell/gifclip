@@ -599,29 +599,38 @@ fn parse_timestamp(ts: &str) -> Result<f64> {
 }
 
 fn get_video_duration(ffmpeg: &Path, video_path: &Path) -> Result<f64> {
-    // Use ffprobe (or ffmpeg if ffprobe not available) to get video duration
-    let output = Command::new(ffmpeg)
-        .arg("-i")
-        .arg(video_path)
-        .arg("-show_entries")
-        .arg("format=duration")
-        .arg("-v")
-        .arg("quiet")
-        .arg("-of")
-        .arg("csv=p=0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("Failed to get video duration")?;
+    // Try ffprobe first (it's typically bundled with ffmpeg)
+    let ffprobe = if let Some(parent) = ffmpeg.parent() {
+        let probe_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+        parent.join(probe_name)
+    } else {
+        PathBuf::from(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
+    };
 
-    if output.status.success() {
-        let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if let Ok(duration) = duration_str.parse::<f64>() {
-            return Ok(duration);
+    // Try ffprobe if it exists
+    if ffprobe.exists() || which::which(&ffprobe).is_ok() {
+        let output = Command::new(&ffprobe)
+            .arg("-v")
+            .arg("error")
+            .arg("-show_entries")
+            .arg("format=duration")
+            .arg("-of")
+            .arg("default=noprint_wrappers=1:nokey=1")
+            .arg(video_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .context("Failed to run ffprobe")?;
+
+        if output.status.success() {
+            let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Ok(duration) = duration_str.parse::<f64>() {
+                return Ok(duration);
+            }
         }
     }
 
-    // Fallback: try with ffmpeg without ffprobe
+    // Fallback: use ffmpeg to parse duration from output
     let output = Command::new(ffmpeg)
         .arg("-i")
         .arg(video_path)
