@@ -19,14 +19,18 @@ pub fn run_setup() -> Result<Config> {
 
     let has_system_ytdlp = which::which("yt-dlp").is_ok();
     let has_system_ffmpeg = which::which("ffmpeg").is_ok();
+    let has_system_ffprobe = which::which("ffprobe").is_ok();
 
-    let choice = if has_system_ytdlp && has_system_ffmpeg {
+    let choice = if has_system_ytdlp && has_system_ffmpeg && has_system_ffprobe {
         println!("Found system installations:");
         if has_system_ytdlp {
             println!("  yt-dlp: {}", which::which("yt-dlp").unwrap().display());
         }
         if has_system_ffmpeg {
             println!("  ffmpeg: {}", which::which("ffmpeg").unwrap().display());
+        }
+        if has_system_ffprobe {
+            println!("  ffprobe: {}", which::which("ffprobe").unwrap().display());
         }
         println!();
 
@@ -48,6 +52,9 @@ pub fn run_setup() -> Result<Config> {
         }
         if !has_system_ffmpeg {
             println!("  ffmpeg: not found");
+        }
+        if !has_system_ffprobe {
+            println!("  ffprobe: not found");
         }
         println!();
 
@@ -91,8 +98,9 @@ pub fn ensure_setup() -> Result<Config> {
     // Check if tools are available
     let yt_dlp_ok = config.yt_dlp_path().is_ok_and(|p| p.exists());
     let ffmpeg_ok = config.ffmpeg_path().is_ok_and(|p| p.exists());
+    let ffprobe_ok = config.ffprobe_path().is_ok_and(|p| p.exists());
 
-    if !yt_dlp_ok || !ffmpeg_ok {
+    if !yt_dlp_ok || !ffmpeg_ok || !ffprobe_ok {
         // Need setup
         if config.tool_source == ToolSource::Managed {
             // Tools should be managed but missing - redownload
@@ -102,7 +110,7 @@ pub fn ensure_setup() -> Result<Config> {
         }
 
         // No config or system tools missing - run interactive setup
-        println!("gifclip requires yt-dlp and ffmpeg to work.\n");
+        println!("gifclip requires yt-dlp, ffmpeg, and ffprobe to work.\n");
         return run_setup();
     }
 
@@ -235,11 +243,14 @@ fn extract_ffmpeg_linux(bytes: &[u8], tools_dir: &Path) -> Result<()> {
     let xz = XzDecoder::new(cursor);
     let mut archive = Archive::new(xz);
 
+    let mut found_ffmpeg = false;
+    let mut found_ffprobe = false;
+
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
 
-        // Look for the ffmpeg binary in the archive
+        // Look for the ffmpeg and ffprobe binaries in the archive
         if let Some(name) = path.file_name() {
             if name == "ffmpeg" {
                 let dest = tools_dir.join("ffmpeg");
@@ -250,12 +261,33 @@ fn extract_ffmpeg_linux(bytes: &[u8], tools_dir: &Path) -> Result<()> {
                 perms.set_mode(0o755);
                 fs::set_permissions(&dest, perms)?;
 
-                return Ok(());
+                found_ffmpeg = true;
+            } else if name == "ffprobe" {
+                let dest = tools_dir.join("ffprobe");
+                let mut file = File::create(&dest)?;
+                io::copy(&mut entry, &mut file)?;
+
+                let mut perms = fs::metadata(&dest)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&dest, perms)?;
+
+                found_ffprobe = true;
             }
+        }
+
+        if found_ffmpeg && found_ffprobe {
+            return Ok(());
         }
     }
 
-    bail!("ffmpeg binary not found in archive")
+    if !found_ffmpeg {
+        bail!("ffmpeg binary not found in archive");
+    }
+    if !found_ffprobe {
+        bail!("ffprobe binary not found in archive");
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -264,6 +296,9 @@ fn extract_ffmpeg_macos(bytes: &[u8], tools_dir: &Path) -> Result<()> {
 
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
+
+    let mut found_ffmpeg = false;
+    let mut found_ffprobe = false;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
@@ -278,11 +313,32 @@ fn extract_ffmpeg_macos(bytes: &[u8], tools_dir: &Path) -> Result<()> {
             perms.set_mode(0o755);
             fs::set_permissions(&dest, perms)?;
 
+            found_ffmpeg = true;
+        } else if name == "ffprobe" || name.ends_with("/ffprobe") {
+            let dest = tools_dir.join("ffprobe");
+            let mut outfile = File::create(&dest)?;
+            io::copy(&mut file, &mut outfile)?;
+
+            let mut perms = fs::metadata(&dest)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)?;
+
+            found_ffprobe = true;
+        }
+
+        if found_ffmpeg && found_ffprobe {
             return Ok(());
         }
     }
 
-    bail!("ffmpeg binary not found in archive")
+    if !found_ffmpeg {
+        bail!("ffmpeg binary not found in archive");
+    }
+    if !found_ffprobe {
+        bail!("ffprobe binary not found in archive");
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -292,6 +348,9 @@ fn extract_ffmpeg_windows(bytes: &[u8], tools_dir: &Path) -> Result<()> {
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
+    let mut found_ffmpeg = false;
+    let mut found_ffprobe = false;
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name();
@@ -300,9 +359,25 @@ fn extract_ffmpeg_windows(bytes: &[u8], tools_dir: &Path) -> Result<()> {
             let dest = tools_dir.join("ffmpeg.exe");
             let mut outfile = File::create(&dest)?;
             io::copy(&mut file, &mut outfile)?;
+            found_ffmpeg = true;
+        } else if name.ends_with("ffprobe.exe") {
+            let dest = tools_dir.join("ffprobe.exe");
+            let mut outfile = File::create(&dest)?;
+            io::copy(&mut file, &mut outfile)?;
+            found_ffprobe = true;
+        }
+
+        if found_ffmpeg && found_ffprobe {
             return Ok(());
         }
     }
 
-    bail!("ffmpeg.exe not found in archive")
+    if !found_ffmpeg {
+        bail!("ffmpeg.exe not found in archive");
+    }
+    if !found_ffprobe {
+        bail!("ffprobe.exe not found in archive");
+    }
+
+    Ok(())
 }

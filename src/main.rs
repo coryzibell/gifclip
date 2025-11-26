@@ -326,7 +326,7 @@ fn main() -> Result<()> {
             parse_timestamp(end)?
         } else {
             // Get video duration
-            get_video_duration(&ffmpeg, &video_path)?
+            get_video_duration(&config, &video_path)?
         };
 
         if end_secs <= start_secs {
@@ -598,40 +598,35 @@ fn parse_timestamp(ts: &str) -> Result<f64> {
     bail!("Invalid timestamp format: {}. Use MM:SS, HH:MM:SS, or seconds", ts)
 }
 
-fn get_video_duration(ffmpeg: &Path, video_path: &Path) -> Result<f64> {
-    // Try ffprobe first (it's typically bundled with ffmpeg)
-    let ffprobe = if let Some(parent) = ffmpeg.parent() {
-        let probe_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
-        parent.join(probe_name)
-    } else {
-        PathBuf::from(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" })
-    };
+fn get_video_duration(config: &config::Config, video_path: &Path) -> Result<f64> {
+    // Try ffprobe first (preferred method for getting duration)
+    if let Ok(ffprobe) = config.ffprobe_path() {
+        if ffprobe.exists() {
+            let output = Command::new(&ffprobe)
+                .arg("-v")
+                .arg("error")
+                .arg("-show_entries")
+                .arg("format=duration")
+                .arg("-of")
+                .arg("default=noprint_wrappers=1:nokey=1")
+                .arg(video_path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .context("Failed to run ffprobe")?;
 
-    // Try ffprobe if it exists
-    if ffprobe.exists() || which::which(&ffprobe).is_ok() {
-        let output = Command::new(&ffprobe)
-            .arg("-v")
-            .arg("error")
-            .arg("-show_entries")
-            .arg("format=duration")
-            .arg("-of")
-            .arg("default=noprint_wrappers=1:nokey=1")
-            .arg(video_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .context("Failed to run ffprobe")?;
-
-        if output.status.success() {
-            let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Ok(duration) = duration_str.parse::<f64>() {
-                return Ok(duration);
+            if output.status.success() {
+                let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if let Ok(duration) = duration_str.parse::<f64>() {
+                    return Ok(duration);
+                }
             }
         }
     }
 
     // Fallback: use ffmpeg to parse duration from output
-    let output = Command::new(ffmpeg)
+    let ffmpeg = config.ffmpeg_path()?;
+    let output = Command::new(&ffmpeg)
         .arg("-i")
         .arg(video_path)
         .stdout(Stdio::null())

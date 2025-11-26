@@ -97,4 +97,20 @@ impl Config {
             }
         }
     }
+
+    pub fn ffprobe_path(&self) -> Result<PathBuf> {
+        match self.tool_source {
+            ToolSource::System => {
+                which::which("ffprobe").context("ffprobe not found in PATH")
+            }
+            ToolSource::Managed => {
+                let tools_dir = Self::tools_dir()?;
+                #[cfg(windows)]
+                let name = "ffprobe.exe";
+                #[cfg(not(windows))]
+                let name = "ffprobe";
+                Ok(tools_dir.join(name))
+            }
+        }
+    }
 }
