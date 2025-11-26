@@ -640,7 +640,7 @@ fn get_video_duration(ffmpeg: &Path, video_path: &Path) -> Result<f64> {
         .context("Failed to get video duration with ffmpeg")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     // Parse duration from ffmpeg stderr output (format: "Duration: HH:MM:SS.MS")
     let re = Regex::new(r"Duration: (\d+):(\d+):(\d+\.?\d*)").unwrap();
     if let Some(caps) = re.captures(&stderr) {
