@@ -165,6 +165,9 @@ fn main() -> Result<()> {
 
     let input = cli.input.as_ref().context("Input is required")?;
 
+    // Skip subtitle handling if custom text is provided
+    let skip_subs = cli.no_subs || cli.text.is_some();
+
     // Determine input type and get video + subtitles
     let (video_path, video_title, sub_path) = if is_url(input) && is_youtube_url(input) {
         // YouTube mode - use yt-dlp
@@ -174,7 +177,7 @@ fn main() -> Result<()> {
         println!("Video: {}", video_title);
 
         // Download video (always get subs for dialogue mode, or if user wants them)
-        let need_subs = cli.subs.is_none() && (cli.from.is_some() || !cli.no_subs);
+        let need_subs = cli.subs.is_none() && (cli.from.is_some() || !skip_subs);
 
         println!("Downloading video...");
         let video_path = temp_path.join("video.mp4");
@@ -227,7 +230,7 @@ fn main() -> Result<()> {
         // Handle subtitles - explicit subs or try embedded
         let sub_path = if let Some(ref subs_input) = cli.subs {
             Some(resolve_subs_input(subs_input, temp_path)?)
-        } else if !cli.no_subs {
+        } else if !skip_subs {
             let extracted_subs = temp_path.join("extracted.srt");
             if extract_embedded_subs(&ffmpeg, &video_path, &extracted_subs)? {
                 println!("Extracted embedded subtitles");
@@ -253,7 +256,7 @@ fn main() -> Result<()> {
         // Handle subtitles - explicit, embedded, or adjacent file
         let sub_path = if let Some(ref subs_input) = cli.subs {
             Some(resolve_subs_input(subs_input, temp_path)?)
-        } else if !cli.no_subs {
+        } else if !skip_subs {
             // First try embedded subs
             let extracted_subs = temp_path.join("extracted.srt");
             if extract_embedded_subs(&ffmpeg, &video_path, &extracted_subs)? {
@@ -328,8 +331,8 @@ fn main() -> Result<()> {
         duration, start_secs, end_secs
     );
 
-    let has_subs = !cli.no_subs && sub_path.is_some();
-    if !cli.no_subs && !has_subs {
+    let has_subs = !skip_subs && sub_path.is_some();
+    if !skip_subs && !has_subs && cli.text.is_none() {
         eprintln!("Warning: No subtitles found, proceeding without them");
     }
 
