@@ -131,6 +131,16 @@ gifclip movie.mp4 1:30 1:45 --subs "https://example.com/subs.srt"
 gifclip movie.mp4 1:30 1:45 --no-subs
 ```
 
+### Custom Text Overlay
+
+Add your own caption instead of using subtitles:
+
+```bash
+gifclip movie.mp4 1:30 1:45 --text "Your caption here"
+```
+
+The text is displayed centered at the bottom with a black outline for visibility.
+
 ### Output Formats
 
 ```bash
@@ -149,6 +159,7 @@ gifclip "URL" 1:30 1:45 -f mp4
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--subs <FILE_OR_URL>` | External subtitle file or URL | Auto-detect |
+| `--text <STRING>` | Custom text overlay (replaces subtitles) | - |
 | `-o, --output <FILE>` | Output filename | Auto-generated |
 | `-f, --format <FMT>` | Output format: `gif`, `webm`, `mp4` | `gif` |
 | `-w, --width <PX>` | Width in pixels (height scales proportionally) | `480` |

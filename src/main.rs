@@ -48,6 +48,11 @@ DIALOGUE MODE:
     gifclip \"URL\" --from \"quote\" --pad 3
     gifclip \"URL\" --from \"quote\" --pad-before 1 --pad-after 5
 
+CUSTOM TEXT:
+  gifclip <INPUT> <START> <END> --text \"Your caption here\"
+
+  Add custom text overlay instead of subtitles.
+
 INPUT TYPES:
   - YouTube URL: Downloads via yt-dlp, auto-fetches subtitles
   - Local file: Uses embedded subs or looks for matching .srt file
@@ -125,6 +130,10 @@ struct Cli {
     /// Skip subtitles
     #[arg(long)]
     no_subs: bool,
+
+    /// Custom text to overlay on the clip (displayed for entire duration)
+    #[arg(long)]
+    text: Option<String>,
 
     /// Quality for lossy formats (1-100, higher is better). For gif, reduces colors.
     #[arg(short, long, default_value = "80")]
@@ -388,7 +397,20 @@ fn format_timestamp(secs: f64) -> String {
     format!("{}m{}s", mins, secs)
 }
 
-fn build_subtitle_filter(sub_path: &Option<PathBuf>) -> Option<String> {
+fn build_subtitle_filter(sub_path: &Option<PathBuf>, custom_text: &Option<String>) -> Option<String> {
+    // Custom text takes priority over subtitle file
+    if let Some(text) = custom_text {
+        let text_escaped = text
+            .replace('\\', "\\\\")
+            .replace(':', "\\:")
+            .replace("'", "\\'");
+        // drawtext filter with bottom-center positioning, white text with black outline
+        return Some(format!(
+            "drawtext=text='{}':fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-th-20",
+            text_escaped
+        ));
+    }
+
     sub_path.as_ref().map(|subs| {
         let sub_escaped = subs
             .to_string_lossy()
@@ -413,7 +435,7 @@ fn encode_gif(
         format!("scale={}:-1:flags=lanczos", cli.width),
     ];
 
-    if let Some(sub_filter) = build_subtitle_filter(sub_path) {
+    if let Some(sub_filter) = build_subtitle_filter(sub_path, &cli.text) {
         filters.insert(0, sub_filter);
     }
 
@@ -460,7 +482,7 @@ fn encode_webm(
         format!("scale={}:-1", cli.width),
     ];
 
-    if let Some(sub_filter) = build_subtitle_filter(sub_path) {
+    if let Some(sub_filter) = build_subtitle_filter(sub_path, &cli.text) {
         filters.insert(0, sub_filter);
     }
 
@@ -509,7 +531,7 @@ fn encode_mp4(
         format!("scale={}:-1", cli.width),
     ];
 
-    if let Some(sub_filter) = build_subtitle_filter(sub_path) {
+    if let Some(sub_filter) = build_subtitle_filter(sub_path, &cli.text) {
         filters.insert(0, sub_filter);
     }
 
