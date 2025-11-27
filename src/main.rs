@@ -24,14 +24,18 @@ enum OutputFormat {
 #[command(long_about = "Create GIFs/videos with burned-in subtitles from YouTube, local files, or URLs.
 
 TIMESTAMP MODE:
-  gifclip <INPUT> <START> <END>
+  gifclip <INPUT> [--start <TIME>] [--end <TIME>]
 
-  Clip a video using specific timestamps.
+  Clip a video using optional timestamps. If neither start nor end is provided,
+  the entire video will be processed. If only one is provided, it will clip from
+  the beginning or to the end accordingly.
 
   Examples:
-    gifclip \"https://youtube.com/watch?v=...\" 1:30 1:45
-    gifclip movie.mp4 0:45 0:59 -f mp4 -w 720
-    gifclip \"https://example.com/video.mp4\" 0:10 0:20
+    gifclip \"https://youtube.com/watch?v=...\" --start 1:30 --end 1:45
+    gifclip movie.mp4 --start 0:45 --end 0:59 -f mp4 -w 720
+    gifclip \"https://example.com/video.mp4\" --end 0:20
+    gifclip movie.mp4 --start 1:00
+    gifclip video.mp4
 
 DIALOGUE MODE:
   gifclip <INPUT> --from \"dialogue text\" [--to \"ending text\"]
@@ -49,7 +53,7 @@ DIALOGUE MODE:
     gifclip \"URL\" --from \"quote\" --pad-before 1 --pad-after 5
 
 CUSTOM TEXT:
-  gifclip <INPUT> <START> <END> --text \"Your caption here\"
+  gifclip <INPUT> [--start <TIME>] [--end <TIME>] --text \"Your caption here\"
 
   Add custom text overlay instead of subtitles.
 
@@ -72,15 +76,15 @@ struct Cli {
     setup: bool,
 
     /// Input: YouTube URL, local file path, or direct video URL
-    #[arg(required_unless_present_any = ["command", "setup"])]
+    #[arg(required_unless_present = "setup")]
     input: Option<String>,
 
     /// Start timestamp (e.g., "1:30" or "00:01:30" or "90")
-    #[arg(required_unless_present_any = ["command", "setup", "from"])]
+    #[arg(long, conflicts_with = "from")]
     start: Option<String>,
 
     /// End timestamp (e.g., "1:35" or "00:01:35" or "95")
-    #[arg(required_unless_present_any = ["command", "setup", "from"])]
+    #[arg(long, conflicts_with = "from")]
     end: Option<String>,
 
     /// External subtitle file path or URL (overrides auto-detected subs)
@@ -311,12 +315,19 @@ fn main() -> Result<()> {
 
         (start_padded, end_padded)
     } else {
-        // Timestamp mode
-        let start = cli.start.as_ref().context("Start timestamp is required")?;
-        let end = cli.end.as_ref().context("End timestamp is required")?;
+        // Timestamp mode - handle optional start/end
+        let start_secs = if let Some(ref start) = cli.start {
+            parse_timestamp(start)?
+        } else {
+            0.0
+        };
 
-        let start_secs = parse_timestamp(start)?;
-        let end_secs = parse_timestamp(end)?;
+        let end_secs = if let Some(ref end) = cli.end {
+            parse_timestamp(end)?
+        } else {
+            // Get video duration
+            get_video_duration(&config, &video_path)?
+        };
 
         if end_secs <= start_secs {
             bail!("End time must be after start time");
@@ -585,6 +596,56 @@ fn parse_timestamp(ts: &str) -> Result<f64> {
     }
 
     bail!("Invalid timestamp format: {}. Use MM:SS, HH:MM:SS, or seconds", ts)
+}
+
+fn get_video_duration(config: &config::Config, video_path: &Path) -> Result<f64> {
+    // Try ffprobe first (preferred method for getting duration)
+    if let Ok(ffprobe) = config.ffprobe_path() {
+        if ffprobe.exists() {
+            let output = Command::new(&ffprobe)
+                .arg("-v")
+                .arg("error")
+                .arg("-show_entries")
+                .arg("format=duration")
+                .arg("-of")
+                .arg("default=noprint_wrappers=1:nokey=1")
+                .arg(video_path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .context("Failed to run ffprobe")?;
+
+            if output.status.success() {
+                let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if let Ok(duration) = duration_str.parse::<f64>() {
+                    return Ok(duration);
+                }
+            }
+        }
+    }
+
+    // Fallback: use ffmpeg to parse duration from output
+    let ffmpeg = config.ffmpeg_path()?;
+    let output = Command::new(&ffmpeg)
+        .arg("-i")
+        .arg(video_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("Failed to get video duration with ffmpeg")?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Parse duration from ffmpeg stderr output (format: "Duration: HH:MM:SS.MS")
+    let re = Regex::new(r"Duration: (\d+):(\d+):(\d+\.?\d*)").unwrap();
+    if let Some(caps) = re.captures(&stderr) {
+        let hours: f64 = caps[1].parse().unwrap_or(0.0);
+        let minutes: f64 = caps[2].parse().unwrap_or(0.0);
+        let seconds: f64 = caps[3].parse().unwrap_or(0.0);
+        return Ok(hours * 3600.0 + minutes * 60.0 + seconds);
+    }
+
+    bail!("Could not determine video duration")
 }
 
 fn find_subtitle_file(dir: &Path, lang: &str) -> Option<PathBuf> {
